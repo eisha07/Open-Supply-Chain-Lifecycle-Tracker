@@ -1,0 +1,112 @@
+.chroma-grid {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  gap: 1px;
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+.chroma-item {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  background: #0e0e14;
+  transition: transform 0.2s ease;
+}
+
+.chroma-item:hover {
+  transform: scale(1.01);
+  z-index: 2;
+}
+
+.chroma-item a {
+  display: block;
+  width: 100%;
+  height: 100%;
+  text-decoration: none;
+  color: inherit;
+}
+
+.chroma-item__inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  z-index: 1;
+}
+
+/* The coloured gradient background (inline style via JS) */
+.chroma-item__bg {
+  position: absolute;
+  inset: 0;
+  opacity: 0.25;
+  transition: opacity 0.3s;
+}
+
+.chroma-item:hover .chroma-item__bg {
+  opacity: 0.45;
+}
+
+/* Border highlight */
+.chroma-item::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  transition: border-color 0.3s;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.chroma-item:hover::after {
+  border-color: var(--item-border, #3b82f6);
+}
+
+/* Avatar / icon */
+.chroma-item__avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 1rem;
+  border: 2px solid rgba(255,255,255,0.15);
+  flex-shrink: 0;
+}
+
+.chroma-item__title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 0.2rem;
+  line-height: 1.2;
+}
+
+.chroma-item__subtitle {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 0.4rem;
+}
+
+.chroma-item__handle {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.35);
+  font-family: monospace;
+}
+
+/* Spotlight overlay — moved by GSAP */
+.chroma-spotlight {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    circle var(--r, 300px) at var(--x, -9999px) var(--y, -9999px),
+    rgba(255, 255, 255, 0.06),
+    transparent 70%
+  );
+}
