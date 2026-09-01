@@ -1,11 +1,11 @@
 // Public Digital Product Passport — mobile-first, no auth required
 "use client";
 
-import { useEffect, useState } from "react";
-import { ShieldCheck, AlertTriangle, Info, Globe, QrCode } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { ShieldCheck, AlertTriangle, Info, Globe, QrCode, Download, ChevronLeft, ChevronRight, Filter } from "lucide-react";
 import Link from "next/link";
-import { getPublicPassport, getPublicTimeline } from "@/lib/api";
-import type { TwinPublicRead, PassportTimeline, ComplianceBadge } from "@/lib/types";
+import { getPublicPassport, getPublicTimeline, getPassportQrUrl } from "@/lib/api";
+import type { TwinPublicRead, PassportTimeline, ComplianceBadge, EventType } from "@/lib/types";
 import { SoHGauge } from "@/components/SoHGauge";
 import { EventTimeline } from "@/components/EventTimeline";
 
@@ -28,18 +28,52 @@ const STATUS_LABEL: Record<string, { text: string; color: string }> = {
   SCRAPPED:                            { text: "Scrapped", color: "#374151" },
 };
 
+const EVENT_TYPE_OPTIONS: { value: EventType | ""; label: string }[] = [
+  { value: "", label: "All Events" },
+  { value: "EXTRACTION", label: "Extraction" },
+  { value: "ASSEMBLY", label: "Assembly" },
+  { value: "CUSTODY_TRANSFER", label: "Custody Transfer" },
+  { value: "REPAIR_PART_SWAP", label: "Repair / Part Swap" },
+  { value: "TELEMETRY_SNAPSHOT", label: "Telemetry Snapshot" },
+  { value: "DECOMMISSION", label: "Decommission" },
+];
+
+const PAGE_LIMIT = 20;
+
 export default function PassportPage({ params }: { params: { twin_id: string } }) {
   const twinId = decodeURIComponent(params.twin_id);
   const [passport, setPassport] = useState<TwinPublicRead | null>(null);
   const [timeline, setTimeline] = useState<PassportTimeline | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showQr, setShowQr] = useState(false);
+
+  // Timeline pagination + filtering
+  const [page, setPage] = useState(0);
+  const [eventTypeFilter, setEventTypeFilter] = useState<EventType | "">("");
+  const [loadingTimeline, setLoadingTimeline] = useState(false);
+
+  const loadTimeline = useCallback(async (currentPage: number, filter: EventType | "") => {
+    setLoadingTimeline(true);
+    try {
+      const t = await getPublicTimeline(twinId, {
+        limit: PAGE_LIMIT,
+        offset: currentPage * PAGE_LIMIT,
+        event_type: filter || undefined,
+      });
+      setTimeline(t);
+    } catch {
+      // keep existing timeline on filter error
+    } finally {
+      setLoadingTimeline(false);
+    }
+  }, [twinId]);
 
   useEffect(() => {
     setLoading(true);
     Promise.all([
       getPublicPassport(twinId),
-      getPublicTimeline(twinId),
+      getPublicTimeline(twinId, { limit: PAGE_LIMIT, offset: 0 }),
     ]).then(([p, t]) => {
       setPassport(p);
       setTimeline(t);
@@ -47,6 +81,19 @@ export default function PassportPage({ params }: { params: { twin_id: string } }
       setError(err instanceof Error ? err.message : "Passport not found");
     }).finally(() => setLoading(false));
   }, [twinId]);
+
+  const handleFilterChange = async (filter: EventType | "") => {
+    setEventTypeFilter(filter);
+    setPage(0);
+    await loadTimeline(0, filter);
+  };
+
+  const handlePageChange = async (newPage: number) => {
+    setPage(newPage);
+    await loadTimeline(newPage, eventTypeFilter);
+  };
+
+  const qrUrl = getPassportQrUrl(twinId, typeof window !== "undefined" ? window.location.origin : "http://localhost:3000");
 
   if (loading) {
     return (
@@ -71,6 +118,8 @@ export default function PassportPage({ params }: { params: { twin_id: string } }
   }
 
   const statusCfg = STATUS_LABEL[passport.status] ?? { text: passport.status, color: "#6b7280" };
+  const pagination = timeline?.pagination;
+  const totalPages = pagination ? Math.ceil(pagination.total / PAGE_LIMIT) : 1;
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white pb-16">
@@ -80,10 +129,39 @@ export default function PassportPage({ params }: { params: { twin_id: string } }
           <QrCode size={16} className="text-purple-400" />
           <span className="text-xs font-semibold text-white/70">Digital Product Passport</span>
         </div>
-        <Link href="/" className="text-xs text-white/30 hover:text-white/60 transition-colors">OSLT</Link>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowQr((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-white/30 hover:text-white/60 transition-colors"
+          >
+            <QrCode size={13} /> QR Code
+          </button>
+          <Link href="/" className="text-xs text-white/30 hover:text-white/60 transition-colors">OSLT</Link>
+        </div>
       </header>
 
       <main className="max-w-2xl mx-auto px-5 py-6 space-y-6">
+        {/* QR Code panel */}
+        {showQr && (
+          <div className="bg-white/[0.03] border border-purple-500/20 rounded-2xl p-5 flex flex-col items-center gap-4">
+            <p className="text-xs text-white/40">Scan to open this passport on any device</p>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={qrUrl}
+              alt="QR code for this passport"
+              className="w-48 h-48 bg-white rounded-xl p-2"
+              onError={(e) => (e.currentTarget.style.display = "none")}
+            />
+            <a
+              href={qrUrl}
+              download={`passport_qr_${twinId.slice(0, 20)}.png`}
+              className="flex items-center gap-1.5 text-xs text-purple-300 hover:text-purple-200"
+            >
+              <Download size={12} /> Download PNG
+            </a>
+          </div>
+        )}
+
         {/* Safety warnings */}
         {timeline?.safety_warnings?.map((w) => (
           <div
@@ -115,7 +193,6 @@ export default function PassportPage({ params }: { params: { twin_id: string } }
             <SoHGauge value={passport.current_soh_pct} size={88} label="SoH" />
           </div>
 
-          {/* Key metrics grid */}
           <div className="grid grid-cols-2 gap-3 mt-4">
             <MetricTile label="Safety Rating" value={passport.current_safety_rating ?? "—"} color="#22c55e" />
             <MetricTile label="Recyclability" value={passport.recyclability_score !== null ? `${passport.recyclability_score}/100` : "—"} color="#14b8a6" />
@@ -153,10 +230,59 @@ export default function PassportPage({ params }: { params: { twin_id: string } }
 
         {/* Provenance timeline */}
         <div>
-          <h2 className="text-xs uppercase tracking-widest text-white/30 mb-4">
-            Provenance Timeline ({timeline?.timeline?.length ?? 0} events)
-          </h2>
-          <EventTimeline events={timeline?.timeline ?? []} />
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xs uppercase tracking-widest text-white/30">
+              Provenance Timeline
+              {pagination && (
+                <span className="ml-2 text-white/20 normal-case">
+                  ({pagination.total} event{pagination.total !== 1 ? "s" : ""})
+                </span>
+              )}
+            </h2>
+            <div className="flex items-center gap-2">
+              <Filter size={12} className="text-white/25" />
+              <select
+                value={eventTypeFilter}
+                onChange={(e) => handleFilterChange(e.target.value as EventType | "")}
+                className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none"
+              >
+                {EVENT_TYPE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value} className="bg-zinc-900">{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {loadingTimeline ? (
+            <div className="flex justify-center py-8">
+              <div className="w-6 h-6 border-2 border-white/10 border-t-white/40 rounded-full animate-spin" />
+            </div>
+          ) : (
+            <EventTimeline events={timeline?.timeline ?? []} />
+          )}
+
+          {/* Pagination controls */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-4 mt-4">
+              <button
+                onClick={() => handlePageChange(page - 1)}
+                disabled={page === 0 || loadingTimeline}
+                className="flex items-center gap-1 text-xs text-white/40 hover:text-white/70 disabled:opacity-30 transition-colors"
+              >
+                <ChevronLeft size={13} /> Prev
+              </button>
+              <span className="text-xs text-white/25">
+                Page {page + 1} of {totalPages}
+              </span>
+              <button
+                onClick={() => handlePageChange(page + 1)}
+                disabled={!pagination?.has_more || loadingTimeline}
+                className="flex items-center gap-1 text-xs text-white/40 hover:text-white/70 disabled:opacity-30 transition-colors"
+              >
+                Next <ChevronRight size={13} />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* DID */}

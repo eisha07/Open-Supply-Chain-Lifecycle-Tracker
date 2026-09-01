@@ -3,10 +3,15 @@
 import type {
   ActorKeypairOut,
   ActorRead,
+  BlacklistedSerial,
+  ChallengeResponse,
   EventRead,
+  EventType,
   PassportTimeline,
+  ProvenanceGapReport,
   RecyclingMatrix,
   SecondLifeEstimate,
+  TokenResponse,
   TwinRead,
   TwinPublicRead,
 } from "./types";
@@ -31,6 +36,29 @@ async function request<T>(
   return res.json() as T;
 }
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export async function getChallenge(actorDid: string): Promise<ChallengeResponse> {
+  return request(`/auth/challenge?actor_did=${encodeURIComponent(actorDid)}`);
+}
+
+export async function loginActor(
+  actorDid: string,
+  challenge: string,
+  signature: string
+): Promise<TokenResponse> {
+  return request("/auth/token", {
+    method: "POST",
+    body: JSON.stringify({ actor_did: actorDid, challenge, signature }),
+  });
+}
+
+export async function getMe(token: string): Promise<ActorRead> {
+  return request("/auth/me", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 // ── Actors ────────────────────────────────────────────────────────────────────
 
 export async function registerActor(
@@ -43,8 +71,29 @@ export async function registerActor(
   });
 }
 
+export async function listActors(params?: {
+  role?: string;
+  is_blacklisted?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<ActorRead[]> {
+  const qs = new URLSearchParams();
+  if (params?.role) qs.set("role", params.role);
+  if (params?.is_blacklisted !== undefined) qs.set("is_blacklisted", String(params.is_blacklisted));
+  if (params?.limit) qs.set("limit", String(params.limit));
+  if (params?.offset) qs.set("offset", String(params.offset));
+  return request(`/actors?${qs}`);
+}
+
 export async function getActor(did: string): Promise<ActorRead> {
   return request(`/actors/${encodeURIComponent(did)}`);
+}
+
+export async function blacklistActor(did: string, adminSecret: string): Promise<ActorRead> {
+  return request(`/actors/${encodeURIComponent(did)}/blacklist`, {
+    method: "POST",
+    headers: { "X-Admin-Secret": adminSecret },
+  });
 }
 
 // ── Twins ────────────────────────────────────────────────────────────────────
@@ -114,15 +163,31 @@ export async function generateZkpFlags(
   );
 }
 
+export async function getProvenanceGaps(twinId: string): Promise<ProvenanceGapReport> {
+  return request(`/twins/${encodeURIComponent(twinId)}/provenance-gaps`);
+}
+
 // ── Events ────────────────────────────────────────────────────────────────────
 
 export async function getEvents(
   twinId: string,
-  limit = 100
+  params?: {
+    limit?: number;
+    offset?: number;
+    event_type?: EventType;
+    actor_did?: string;
+    date_from?: string;
+    date_to?: string;
+  }
 ): Promise<EventRead[]> {
-  return request(
-    `/events/${encodeURIComponent(twinId)}?limit=${limit}`
-  );
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  if (params?.offset) qs.set("offset", String(params.offset));
+  if (params?.event_type) qs.set("event_type", params.event_type);
+  if (params?.actor_did) qs.set("actor_did", params.actor_did);
+  if (params?.date_from) qs.set("date_from", params.date_from);
+  if (params?.date_to) qs.set("date_to", params.date_to);
+  return request(`/events/${encodeURIComponent(twinId)}?${qs}`);
 }
 
 export async function appendEvent(payload: {
@@ -140,6 +205,17 @@ export async function appendEvent(payload: {
   });
 }
 
+export function exportEventsCsvUrl(
+  twinId: string,
+  params?: { event_type?: string; actor_did?: string }
+): string {
+  const qs = new URLSearchParams();
+  if (params?.event_type) qs.set("event_type", params.event_type);
+  if (params?.actor_did) qs.set("actor_did", params.actor_did);
+  const queryStr = qs.toString();
+  return `${BASE_URL}/events/${encodeURIComponent(twinId)}/export${queryStr ? `?${queryStr}` : ""}`;
+}
+
 // ── Public Passport ───────────────────────────────────────────────────────────
 
 export async function getPublicPassport(
@@ -149,9 +225,49 @@ export async function getPublicPassport(
 }
 
 export async function getPublicTimeline(
-  twinId: string
+  twinId: string,
+  params?: { limit?: number; offset?: number; event_type?: string }
 ): Promise<PassportTimeline> {
-  return request(`/passport/${encodeURIComponent(twinId)}/timeline`);
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  if (params?.offset) qs.set("offset", String(params.offset));
+  if (params?.event_type) qs.set("event_type", params.event_type);
+  return request(`/passport/${encodeURIComponent(twinId)}/timeline?${qs}`);
+}
+
+export function getPassportQrUrl(twinId: string, baseUrl?: string): string {
+  const qs = new URLSearchParams();
+  if (baseUrl) qs.set("base_url", baseUrl);
+  return `${BASE_URL}/passport/${encodeURIComponent(twinId)}/qr?${qs}`;
+}
+
+// ── Counterfeit Serials ───────────────────────────────────────────────────────
+
+export async function listBlacklistedSerials(): Promise<BlacklistedSerial[]> {
+  return request("/serials");
+}
+
+export async function addBlacklistedSerial(
+  serial_number: string,
+  reason: string,
+  adminSecret: string,
+  added_by_did?: string
+): Promise<BlacklistedSerial> {
+  return request("/serials", {
+    method: "POST",
+    headers: { "X-Admin-Secret": adminSecret },
+    body: JSON.stringify({ serial_number, reason, added_by_did }),
+  });
+}
+
+export async function removeBlacklistedSerial(
+  serial_number: string,
+  adminSecret: string
+): Promise<void> {
+  await fetch(`${BASE_URL}/serials/${encodeURIComponent(serial_number)}`, {
+    method: "DELETE",
+    headers: { "X-Admin-Secret": adminSecret },
+  });
 }
 
 // ── Telemetry WebSocket ───────────────────────────────────────────────────────

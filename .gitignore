@@ -15,6 +15,7 @@ build/
 .env
 .env.local
 .env.*.local
+.env.backend    # contains real secrets — use .env.backend.example as template
 
 # ── IDE / editor ──────────────────────────────────────────────────────────────
 .vscode/

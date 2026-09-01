@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Recycle, Download, AlertTriangle, Package } from "lucide-react";
+import { Recycle, Download, AlertTriangle, Package, Loader } from "lucide-react";
 import Link from "next/link";
 import { listTwins, getRecyclingMatrix, getSecondLifeEstimate } from "@/lib/api";
 import type { TwinRead, RecyclingMatrix, SecondLifeEstimate } from "@/lib/types";
@@ -14,8 +14,15 @@ export default function RecyclerDashboard() {
   const [matrix, setMatrix] = useState<RecyclingMatrix | null>(null);
   const [secondLife, setSecondLife] = useState<SecondLifeEstimate | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingTwins, setLoadingTwins] = useState(true);
 
-  useEffect(() => { listTwins({ limit: 100 }).then(setTwins).catch(() => {}); }, []);
+  useEffect(() => {
+    setLoadingTwins(true);
+    listTwins({ limit: 100 })
+      .then(setTwins)
+      .catch(() => {})
+      .finally(() => setLoadingTwins(false));
+  }, []);
 
   const handleSelect = async (twin: TwinRead) => {
     setSelected(twin);
@@ -56,9 +63,17 @@ export default function RecyclerDashboard() {
         <aside>
           <h2 className="text-xs uppercase tracking-widest text-white/30 mb-4">Assets</h2>
           <div className="space-y-3 max-h-[calc(100vh-180px)] overflow-y-auto pr-1">
-            {twins.map((t) => (
-              <TwinCard key={t.id} twin={t} showSoH={false} onClick={handleSelect} />
-            ))}
+            {loadingTwins ? (
+              <div className="flex justify-center py-8">
+                <Loader size={20} className="animate-spin text-white/20" />
+              </div>
+            ) : twins.length === 0 ? (
+              <p className="text-xs text-white/25 text-center py-8">No twins found.</p>
+            ) : (
+              twins.map((t) => (
+                <TwinCard key={t.id} twin={t} showSoH={false} onClick={handleSelect} />
+              ))
+            )}
           </div>
         </aside>
 

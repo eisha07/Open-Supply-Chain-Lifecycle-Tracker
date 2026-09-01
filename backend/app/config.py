@@ -1,10 +1,11 @@
 """Application settings loaded from environment / .env file."""
 from __future__ import annotations
 
+import json
 from functools import lru_cache
-from typing import List
+from typing import Any, List
 
-from pydantic import AnyHttpUrl, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,20 +19,42 @@ class Settings(BaseSettings):
     # ── Application ──────────────────────────────────────────────────────────
     APP_ENV: str = "development"
     SECRET_KEY: str = "dev-secret-change-me"
+
+    # CORS origins — accepts JSON array OR comma-separated string
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
     # ── Rate Limiting ─────────────────────────────────────────────────────────
     TELEMETRY_RATE_LIMIT_PER_MINUTE: int = 120
     GLOBAL_RATE_LIMIT_PER_MINUTE: int = 600
 
+    # ── JWT / Auth ────────────────────────────────────────────────────────────
+    JWT_SECRET_KEY: str = "jwt-secret-change-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 1440  # 24 hours
+
+    # Shared secret required for admin operations (blacklist, serial management)
+    ADMIN_SECRET: str = "admin-secret-change-in-production"
+
     # ── Crypto ────────────────────────────────────────────────────────────────
     SIGNATURE_MAX_AGE_SECONDS: int = 300
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
-    def parse_cors(cls, v: str | List[str]) -> List[str]:
+    def parse_cors(cls, v: Any) -> List[str]:
+        if isinstance(v, list):
+            return v
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
+            s = v.strip()
+            # Try JSON array first: '["http://...", "http://..."]'
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        return [str(o).strip() for o in parsed]
+                except json.JSONDecodeError:
+                    pass
+            # Fall back to comma-separated string
+            return [origin.strip() for origin in s.split(",") if origin.strip()]
         return v
 
 

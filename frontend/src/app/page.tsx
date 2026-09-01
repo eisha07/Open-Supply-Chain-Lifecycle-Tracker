@@ -84,6 +84,7 @@ export default function HomePage() {
           <a href="/dashboard/oem" className="hover:text-white transition-colors">OEM</a>
           <a href="/dashboard/technician" className="hover:text-white transition-colors">Technician</a>
           <a href="/dashboard/recycler" className="hover:text-white transition-colors">Recycler</a>
+          <a href="/actors" className="hover:text-white transition-colors">Actors</a>
           <a
             href="http://localhost:8000/docs"
             target="_blank"

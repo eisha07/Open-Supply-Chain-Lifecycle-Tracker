@@ -26,3 +26,10 @@ aiosqlite==0.20.0
 
 # Utilities
 python-multipart==0.0.9
+
+# Authentication
+python-jose[cryptography]==3.3.0
+
+# QR Code generation
+qrcode[pil]==7.4.2
+Pillow==10.4.0

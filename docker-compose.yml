@@ -1,20 +1,18 @@
-version: "3.9"
-
 services:
   # ── PostgreSQL ──────────────────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: oslt_user
-      POSTGRES_PASSWORD: oslt_pass
-      POSTGRES_DB: oslt_db
+      POSTGRES_USER: ${POSTGRES_USER:-oslt_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oslt_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-oslt_db}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U oslt_user -d oslt_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oslt_user} -d ${POSTGRES_DB:-oslt_db}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -26,11 +24,13 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://oslt_user:oslt_pass@db:5432/oslt_db
-      SYNC_DATABASE_URL: postgresql://oslt_user:oslt_pass@db:5432/oslt_db
-      APP_ENV: development
-      SECRET_KEY: dev-secret-change-in-production
-      CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oslt_user}:${POSTGRES_PASSWORD:-oslt_pass}@db:5432/${POSTGRES_DB:-oslt_db}
+      SYNC_DATABASE_URL: postgresql://${POSTGRES_USER:-oslt_user}:${POSTGRES_PASSWORD:-oslt_pass}@db:5432/${POSTGRES_DB:-oslt_db}
+      APP_ENV: ${APP_ENV:-development}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-jwt-secret-change-in-production}
+      ADMIN_SECRET: ${ADMIN_SECRET:-admin-secret-change-in-production}
+      CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
     ports:
       - "8000:8000"
     depends_on:
@@ -45,7 +45,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
       - "3000:3000"
     depends_on:

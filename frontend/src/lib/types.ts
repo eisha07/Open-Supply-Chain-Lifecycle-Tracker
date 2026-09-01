@@ -43,6 +43,21 @@ export interface ActorKeypairOut {
   did: string;
 }
 
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+export interface ChallengeResponse {
+  challenge: string;
+  actor_did: string;
+  expires_in_seconds: number;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in_seconds: number;
+  actor: ActorRead;
+}
+
 // ── Digital Twin ─────────────────────────────────────────────────────────────
 
 export interface TwinRead {
@@ -116,12 +131,20 @@ export interface ComplianceBadge {
   color: string;
 }
 
+export interface PaginationMeta {
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
 export interface PassportTimeline {
   twin_id: string;
   product_name: string;
   product_type: string;
   status: TwinStatus;
   timeline: EventPublicRead[];
+  pagination: PaginationMeta;
   compliance_badges: ComplianceBadge[];
   safety_warnings: string[];
 }
@@ -166,6 +189,15 @@ export interface RecyclingMatrix {
   regulatory_references: string[];
 }
 
+// ── Counterfeit Serials ───────────────────────────────────────────────────────
+
+export interface BlacklistedSerial {
+  id: number;
+  serial_number: string;
+  reason: string | null;
+  added_by_did: string | null;
+}
+
 // ── IoT Telemetry ─────────────────────────────────────────────────────────────
 
 export interface TelemetryReading {
@@ -190,4 +222,29 @@ export interface QueuedEvent {
   cryptographic_signature: string;
   queued_at: string;
   synced: boolean;
+}
+
+// ── Provenance Gaps ───────────────────────────────────────────────────────────
+
+export interface ProvenanceGap {
+  after_sequence: number;
+  before_sequence: number;
+  missing_sequences: number[];
+  gap_size: number;
+  after_event_type: EventType;
+  before_event_type: EventType;
+  after_actor_did: string;
+  before_actor_did: string;
+  after_timestamp: string;
+  before_timestamp: string;
+}
+
+export interface ProvenanceGapReport {
+  twin_id: string;
+  has_provenance_gap: boolean;
+  total_events_recorded: number;
+  total_gaps: number;
+  total_missing_events: number;
+  gaps: ProvenanceGap[];
+  recommendation: string;
 }

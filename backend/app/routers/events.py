@@ -1,23 +1,28 @@
 """
 Append-only event ledger endpoints (Features 2 & 3 + Edge Cases 1–4).
 
-POST /events              — Append a new signed lifecycle event
-GET  /events/{twin_id}    — Retrieve full event history for a twin
-GET  /events/{twin_id}/verify — Re-verify the chain-hash integrity
+POST /events                    — Append a new signed lifecycle event
+GET  /events/{twin_id}          — Retrieve full event history for a twin (filterable)
+GET  /events/{twin_id}/export   — Export event history as CSV
+GET  /events/{twin_id}/verify   — Re-verify the chain-hash integrity
 """
 from __future__ import annotations
 
-import asyncio
+import csv
+import io
+import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.actor import Actor, ActorRole
+from app.models.blacklisted_serial import BlacklistedSerial
 from app.models.event import EventType, ProductEvent, ROLE_EVENT_PERMISSIONS
 from app.models.telemetry import UntrustedTelemetry
 from app.models.twin import ProductTwin, TwinStatus
@@ -30,6 +35,7 @@ from app.services.crypto import (
 )
 from app.services.state_engine import reduce_events
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["Events"])
 
 # ── Telemetry anomaly bounds ──────────────────────────────────────────────────
@@ -40,10 +46,6 @@ _BOUNDS: Dict[str, tuple[float, float]] = {
     "soh_pct": (0.0, 100.0),
     "capacity_kwh": (0.0, 1000.0),
 }
-
-# ── Blacklisted / counterfeit serial registry (in-memory for MVP) ─────────────
-# In production this would be a DB table with admin management endpoints.
-_BLACKLISTED_SERIALS: set[str] = set()
 
 
 def _check_telemetry_bounds(metadata: Dict[str, Any]) -> List[str]:
@@ -92,6 +94,14 @@ async def _get_previous_hash(db: AsyncSession, twin_id: str, seq: int) -> str | 
     return sha256_hex(payload_bytes)
 
 
+async def _is_serial_blacklisted(db: AsyncSession, serial: str) -> bool:
+    """Check DB-backed counterfeit serial registry."""
+    result = await db.execute(
+        select(BlacklistedSerial).where(BlacklistedSerial.serial_number == serial)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 @router.post("", response_model=EventRead, status_code=status.HTTP_201_CREATED,
              summary="Append a signed lifecycle event to the immutable ledger")
 async def append_event(
@@ -106,7 +116,7 @@ async def append_event(
     3. Ed25519 signature verification.
     4. Optimistic concurrency check (version_id).
     5. Telemetry anomaly bounds check → quarantine if violated.
-    6. Counterfeit part detection (Edge Case 2).
+    6. Counterfeit part detection — DB-backed serial registry (Edge Case 2).
     7. Provenance gap detection (Edge Case 1).
     8. Append event + update twin state.
     """
@@ -116,6 +126,7 @@ async def append_event(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Actor {payload.actor_did!r} not registered")
     if actor.is_blacklisted:
+        logger.warning("SECURITY: Blacklisted actor %s attempted event submission", payload.actor_did)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Actor is blacklisted — event rejected")
 
@@ -143,6 +154,7 @@ async def append_event(
     )
     if not verify_signature(canonical_bytes, payload.cryptographic_signature,
                              actor.public_key_hex):
+        logger.warning("SECURITY: Signature verification failed for actor %s", payload.actor_did)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Cryptographic signature verification failed")
 
@@ -189,21 +201,18 @@ async def append_event(
                 },
             )
 
-    # ── Step 6: Counterfeit part detection (Edge Case 2) ──────────────────
+    # ── Step 6: Counterfeit part detection — DB-backed (Edge Case 2) ──────
     if payload.event_type == EventType.REPAIR_PART_SWAP:
         part_serial = payload.metadata_json.get("new_part_serial")
-        new_part_did = payload.metadata_json.get("new_part_did")
-        if part_serial and part_serial in _BLACKLISTED_SERIALS:
-            # Hard-reject: mark twin as TAMPERED
+        if part_serial and await _is_serial_blacklisted(db, part_serial):
             twin.status = TwinStatus.TAMPERED_SAFETY_RISK
             alert_payload = {
                 "actor_did": payload.actor_did,
                 "attempted_part_serial": part_serial,
-                "reason": "Blacklisted serial number",
+                "reason": "Blacklisted serial number (DB registry)",
             }
             twin.tamper_alert_payload = alert_payload
 
-            # Append a system SECURITY_ALERT event
             seq = await _get_next_sequence(db, payload.twin_id)
             prev_hash = await _get_previous_hash(db, payload.twin_id, seq)
             alert_event = ProductEvent(
@@ -220,6 +229,10 @@ async def append_event(
             twin.version_id += 1
             await db.flush()
 
+            logger.warning(
+                "SECURITY: Counterfeit part serial %s detected on twin %s by actor %s",
+                part_serial, payload.twin_id, payload.actor_did,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
@@ -231,10 +244,7 @@ async def append_event(
 
     # ── Step 7: Provenance gap detection (Edge Case 1) ─────────────────────
     next_seq = await _get_next_sequence(db, payload.twin_id)
-
-    # If a CUSTODY_TRANSFER was expected (e.g. EXTRACTION → ASSEMBLY)
-    # but we detect a gap, we accept the event but flag the twin.
-    # Gap = the sequence number would be non-consecutive (handled in state engine).
+    # Gap detection happens inside the state engine during reduce_events.
 
     # ── Step 8: Commit the event ──────────────────────────────────────────
     prev_hash = await _get_previous_hash(db, payload.twin_id, next_seq)
@@ -260,7 +270,6 @@ async def append_event(
     all_events = list(result.scalars().all()) + [event]
     new_state = reduce_events(twin, all_events)
 
-    # Apply computed state back to the twin row
     for field, value in new_state.items():
         setattr(twin, field, value)
     twin.version_id += 1
@@ -274,15 +283,21 @@ async def append_event(
             detail="Concurrent write conflict on sequence number — retry",
         )
 
+    logger.info("EVENT: %s appended to twin %s (seq=%d)", payload.event_type.value,
+                payload.twin_id, next_seq)
     return EventRead.model_validate(event)
 
 
 @router.get("/{twin_id}", response_model=List[EventRead],
-            summary="Retrieve full event history for a twin")
+            summary="Retrieve event history for a twin (filterable)")
 async def get_events(
     twin_id: str,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    event_type: Optional[EventType] = Query(None, description="Filter by event type"),
+    actor_did: Optional[str] = Query(None, description="Filter by actor DID"),
+    date_from: Optional[datetime] = Query(None, description="ISO-8601 start date filter"),
+    date_to: Optional[datetime] = Query(None, description="ISO-8601 end date filter"),
     db: AsyncSession = Depends(get_db),
 ) -> List[EventRead]:
     twin = await db.get(ProductTwin, twin_id)
@@ -290,14 +305,75 @@ async def get_events(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Twin {twin_id!r} not found")
 
-    result = await db.execute(
-        select(ProductEvent)
-        .where(ProductEvent.twin_id == twin_id)
-        .order_by(ProductEvent.sequence_num)
-        .limit(limit)
-        .offset(offset)
-    )
+    q = select(ProductEvent).where(ProductEvent.twin_id == twin_id)
+    if event_type:
+        q = q.where(ProductEvent.event_type == event_type)
+    if actor_did:
+        q = q.where(ProductEvent.actor_did == actor_did)
+    if date_from:
+        q = q.where(ProductEvent.actor_timestamp >= date_from)
+    if date_to:
+        q = q.where(ProductEvent.actor_timestamp <= date_to)
+
+    q = q.order_by(ProductEvent.sequence_num).limit(limit).offset(offset)
+    result = await db.execute(q)
     return [EventRead.model_validate(e) for e in result.scalars().all()]
+
+
+@router.get("/{twin_id}/export", summary="Export event history as CSV")
+async def export_events_csv(
+    twin_id: str,
+    event_type: Optional[EventType] = Query(None),
+    actor_did: Optional[str] = Query(None),
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """
+    Download the full (filtered) event ledger for a twin as a UTF-8 CSV file.
+    Useful for audit trails, compliance reporting, and offline analysis.
+    """
+    twin = await db.get(ProductTwin, twin_id)
+    if not twin:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Twin {twin_id!r} not found")
+
+    q = select(ProductEvent).where(ProductEvent.twin_id == twin_id)
+    if event_type:
+        q = q.where(ProductEvent.event_type == event_type)
+    if actor_did:
+        q = q.where(ProductEvent.actor_did == actor_did)
+    if date_from:
+        q = q.where(ProductEvent.actor_timestamp >= date_from)
+    if date_to:
+        q = q.where(ProductEvent.actor_timestamp <= date_to)
+
+    q = q.order_by(ProductEvent.sequence_num)
+    result = await db.execute(q)
+    events = result.scalars().all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "id", "sequence_num", "event_type", "actor_did",
+        "actor_timestamp", "server_timestamp",
+        "previous_event_hash", "cryptographic_signature", "metadata_json",
+    ])
+    for e in events:
+        writer.writerow([
+            e.id, e.sequence_num, e.event_type.value, e.actor_did,
+            e.actor_timestamp.isoformat(), e.server_timestamp.isoformat(),
+            e.previous_event_hash or "", e.cryptographic_signature,
+            str(e.metadata_json),
+        ])
+
+    buf.seek(0)
+    filename = f"events_{twin_id[:20].replace(':', '_')}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{twin_id}/verify", summary="Verify chain-hash integrity of the event ledger")

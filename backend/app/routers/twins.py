@@ -208,6 +208,65 @@ async def second_life_estimate(
     )
 
 
+@router.get("/{twin_id}/provenance-gaps", summary="Detailed provenance gap audit report")
+async def provenance_gap_report(
+    twin_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Returns a detailed audit report of sequence gaps in the event ledger.
+
+    A provenance gap means some events between two consecutive recorded
+    sequence numbers are missing — indicating lost or unrecorded custody
+    transfers in the supply chain.
+    """
+    twin = await db.get(ProductTwin, twin_id)
+    if not twin:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Twin {twin_id!r} not found")
+
+    result = await db.execute(
+        select(ProductEvent)
+        .where(ProductEvent.twin_id == twin_id)
+        .order_by(ProductEvent.sequence_num)
+    )
+    events = list(result.scalars().all())
+
+    gaps = []
+    seen_sequences = [e.sequence_num for e in events]
+
+    for i in range(len(seen_sequences) - 1):
+        current = seen_sequences[i]
+        nxt = seen_sequences[i + 1]
+        if nxt != current + 1:
+            missing_range = list(range(current + 1, nxt))
+            gaps.append({
+                "after_sequence": current,
+                "before_sequence": nxt,
+                "missing_sequences": missing_range,
+                "gap_size": len(missing_range),
+                "after_event_type": events[i].event_type.value,
+                "before_event_type": events[i + 1].event_type.value,
+                "after_actor_did": events[i].actor_did,
+                "before_actor_did": events[i + 1].actor_did,
+                "after_timestamp": events[i].actor_timestamp.isoformat(),
+                "before_timestamp": events[i + 1].actor_timestamp.isoformat(),
+            })
+
+    return {
+        "twin_id": twin_id,
+        "has_provenance_gap": twin.has_provenance_gap,
+        "total_events_recorded": len(events),
+        "total_gaps": len(gaps),
+        "total_missing_events": sum(g["gap_size"] for g in gaps),
+        "gaps": gaps,
+        "recommendation": (
+            "Review custody transfer records for the flagged sequence ranges. "
+            "Contact all actors in the provenance chain to obtain missing event data."
+        ) if gaps else "No provenance gaps detected — supply chain is fully traceable.",
+    }
+
+
 @router.get("/{twin_id}/recycling", summary="Recycling & dismantling matrix (Feature 7)")
 async def recycling_matrix(
     twin_id: str,
