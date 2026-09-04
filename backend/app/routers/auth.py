@@ -13,6 +13,7 @@ from typing import Optional
 
 from app.config import get_settings
 from app.database import get_db
+from app.middleware.audit import audit_event
 from app.models.actor import Actor
 from app.schemas.actor import ActorRead
 from app.schemas.auth import ChallengeResponse, TokenRequest, TokenResponse
@@ -45,10 +46,13 @@ async def get_challenge(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Actor {actor_did!r} not registered")
     if actor.is_blacklisted:
+        audit_event("auth.challenge.blocked", actor_did=actor_did,
+                    detail="Blacklisted actor requested challenge", severity="WARNING")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Actor is blacklisted")
 
     nonce = generate_challenge(actor_did)
+    audit_event("auth.challenge.issued", actor_did=actor_did)
     return ChallengeResponse(challenge=nonce, actor_did=actor_did, expires_in_seconds=120)
 
 
@@ -69,25 +73,33 @@ async def get_token(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Actor {payload.actor_did!r} not registered")
     if actor.is_blacklisted:
+        audit_event("auth.token.blocked", actor_did=payload.actor_did,
+                    detail="Blacklisted actor attempted login", severity="WARNING")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Actor is blacklisted")
-
+    
     # Validate + consume the challenge nonce
     if not consume_challenge(payload.challenge, payload.actor_did):
+        audit_event("auth.token.invalid_challenge", actor_did=payload.actor_did,
+                    detail="Expired or invalid challenge", severity="WARNING")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired challenge — call GET /auth/challenge to get a new one",
+            detail="Invalid or expired challenge \u2014 call GET /auth/challenge to get a new one",
         )
-
+    
     # Verify Ed25519 signature: actor signed the raw challenge bytes
     challenge_bytes = payload.challenge.encode("utf-8")
     if not verify_signature(challenge_bytes, payload.signature, actor.public_key_hex):
+        audit_event("auth.token.bad_signature", actor_did=payload.actor_did,
+                    detail="Ed25519 signature verification failed", severity="WARNING")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Cryptographic signature verification failed",
         )
-
+    
     token = create_access_token(actor_did=actor.did, role=actor.role.value)
+    audit_event("auth.token.issued", actor_did=actor.did,
+                detail=f"JWT issued for role={actor.role.value}")
     return TokenResponse(
         access_token=token,
         token_type="bearer",

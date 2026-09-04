@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.api_key import require_api_key
 from app.dependencies import optional_auth, AuthenticatedActor
 from app.models.actor import Actor, ActorRole
 from app.models.blacklisted_serial import BlacklistedSerial
@@ -303,7 +304,8 @@ async def append_event(
 
 
 @router.get("/{twin_id}", response_model=List[EventRead],
-            summary="Retrieve event history for a twin (filterable)")
+            summary="Retrieve event history for a twin (filterable)",
+            dependencies=[Depends(require_api_key)])
 async def get_events(
     twin_id: str,
     limit: int = Query(100, ge=1, le=500),
@@ -334,7 +336,8 @@ async def get_events(
     return [EventRead.model_validate(e) for e in result.scalars().all()]
 
 
-@router.get("/{twin_id}/export", summary="Export event history as CSV")
+@router.get("/{twin_id}/export", summary="Export event history as CSV",
+            dependencies=[Depends(require_api_key)])
 async def export_events_csv(
     twin_id: str,
     event_type: Optional[EventType] = Query(None),
@@ -390,7 +393,8 @@ async def export_events_csv(
     )
 
 
-@router.get("/{twin_id}/verify", summary="Verify chain-hash integrity of the event ledger")
+@router.get("/{twin_id}/verify", summary="Verify chain-hash integrity of the event ledger",
+            dependencies=[Depends(require_api_key)])
 async def verify_chain(
     twin_id: str,
     db: AsyncSession = Depends(get_db),

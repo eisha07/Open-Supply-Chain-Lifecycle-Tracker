@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # ── Redis (rate limiter backend) ──────────────────────────────────────────
     REDIS_URL: str = ""  # Empty = fall back to in-memory rate limiter
 
+    # ── API Key (HMAC request signing for read endpoints) ────────────────────
+    API_KEY: str = ""  # Empty = disable API key auth (JWT only)
+    API_KEY_HEADER: str = "X-API-Key"
+    API_KEY_MAX_AGE_SECONDS: int = 300  # Max age for signed requests
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors(cls, v: Any) -> List[str]:

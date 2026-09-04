@@ -18,6 +18,7 @@ from typing import Dict, Optional, Tuple
 from fastapi import HTTPException, Request, status
 
 from app.config import get_settings
+from app.middleware.audit import audit_event
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -145,6 +146,11 @@ async def check_rate_limit(
         allowed = await _check_memory((namespace, identifier), capacity, refill_rate)
 
     if not allowed:
+        audit_event(
+            "rate_limit.blocked",
+            detail=f"namespace={namespace} identifier={identifier}",
+            severity="WARNING",
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={

@@ -23,6 +23,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.middleware.audit import audit_event
 from app.models.actor import Actor
 from app.services.auth import decode_access_token
 
@@ -79,7 +80,9 @@ async def require_auth(
             detail=f"Actor {actor_did!r} no longer registered",
         )
     if actor.is_blacklisted:
-        logger.warning("SECURITY: Blacklisted actor %s attempted authenticated request", actor_did)
+        audit_event("auth.rbac.blacklisted", actor_did=actor_did,
+                    detail="Blacklisted actor attempted authenticated request",
+                    severity="WARNING")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Actor is blacklisted",
@@ -110,10 +113,9 @@ def require_role(*allowed_roles: str) -> Callable:
         actor: AuthenticatedActor = Depends(require_auth),
     ) -> AuthenticatedActor:
         if actor.role not in allowed:
-            logger.warning(
-                "SECURITY: Actor %s (role=%s) denied — requires one of %s",
-                actor.did, actor.role, allowed,
-            )
+            audit_event("auth.rbac.denied", actor_did=actor.did,
+                        detail=f"role={actor.role} not in {sorted(allowed)}",
+                        severity="WARNING")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Role {actor.role!r} is not permitted.  Required: {sorted(allowed)}",

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.api_key import require_api_key
 from app.dependencies import optional_auth, AuthenticatedActor
 from app.models.actor import Actor, ActorRole
 from app.models.event import EventType, ProductEvent
@@ -115,7 +116,8 @@ async def create_twin(
     return TwinRead.model_validate(twin)
 
 
-@router.get("", response_model=List[TwinRead], summary="List Digital Twins")
+@router.get("", response_model=List[TwinRead], summary="List Digital Twins",
+            dependencies=[Depends(require_api_key)])
 async def list_twins(
     product_type: Optional[str] = Query(None),
     status_filter: Optional[TwinStatus] = Query(None, alias="status"),
@@ -134,7 +136,8 @@ async def list_twins(
     return [TwinRead.model_validate(t) for t in twins]
 
 
-@router.get("/{twin_id}", response_model=TwinRead, summary="Get a Digital Twin by ID")
+@router.get("/{twin_id}", response_model=TwinRead, summary="Get a Digital Twin by ID",
+            dependencies=[Depends(require_api_key)])
 async def get_twin(
     twin_id: str,
     db: AsyncSession = Depends(get_db),
@@ -147,7 +150,8 @@ async def get_twin(
 
 
 @router.get("/{twin_id}/children", response_model=List[TwinRead],
-            summary="List child twins (BOM view)")
+            summary="List child twins (BOM view)",
+            dependencies=[Depends(require_api_key)])
 async def get_twin_children(
     twin_id: str,
     db: AsyncSession = Depends(get_db),
@@ -195,7 +199,8 @@ async def generate_zkp(
 
 
 @router.get("/{twin_id}/second-life", response_model=SecondLifeEstimate,
-            summary="Secondary-market reuse estimation (Feature 6)")
+            summary="Secondary-market reuse estimation (Feature 6)",
+            dependencies=[Depends(require_api_key)])
 async def second_life_estimate(
     twin_id: str,
     db: AsyncSession = Depends(get_db),
@@ -224,7 +229,8 @@ async def second_life_estimate(
     )
 
 
-@router.get("/{twin_id}/provenance-gaps", summary="Detailed provenance gap audit report")
+@router.get("/{twin_id}/provenance-gaps", summary="Detailed provenance gap audit report",
+            dependencies=[Depends(require_api_key)])
 async def provenance_gap_report(
     twin_id: str,
     db: AsyncSession = Depends(get_db),
@@ -283,7 +289,8 @@ async def provenance_gap_report(
     }
 
 
-@router.get("/{twin_id}/recycling", summary="Recycling & dismantling matrix (Feature 7)")
+@router.get("/{twin_id}/recycling", summary="Recycling & dismantling matrix (Feature 7)",
+            dependencies=[Depends(require_api_key)])
 async def recycling_matrix(
     twin_id: str,
     db: AsyncSession = Depends(get_db),

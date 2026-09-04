@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import engine, Base
+from app.middleware.audit import AuditMiddleware
 from app.middleware.rate_limiter import global_rate_limit_dependency
 from app.routers import actors, auth, events, passport, serials, telemetry_ws, twins
 
@@ -51,7 +52,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
+# ── Middleware (added in reverse execution order: last added = first to run) ──
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -59,6 +60,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuditMiddleware)  # outermost: logs every request
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth.router)                 # /auth — no global rate limit (low traffic)
