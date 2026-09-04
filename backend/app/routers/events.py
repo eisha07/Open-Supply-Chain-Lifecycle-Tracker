@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.dependencies import optional_auth, AuthenticatedActor
 from app.models.actor import Actor, ActorRole
 from app.models.blacklisted_serial import BlacklistedSerial
 from app.models.event import EventType, ProductEvent, ROLE_EVENT_PERMISSIONS
@@ -107,10 +108,12 @@ async def _is_serial_blacklisted(db: AsyncSession, serial: str) -> bool:
 async def append_event(
     payload: EventCreate,
     db: AsyncSession = Depends(get_db),
+    auth_actor: Optional[AuthenticatedActor] = Depends(optional_auth),
 ) -> EventRead:
     """
     Multi-step validation pipeline before committing an event:
 
+    0. JWT identity cross-check (if Bearer token provided).
     1. Resolve and validate the actor (exists, not blacklisted, correct role).
     2. Replay-attack timestamp freshness check.
     3. Ed25519 signature verification.
@@ -120,6 +123,17 @@ async def append_event(
     7. Provenance gap detection (Edge Case 1).
     8. Append event + update twin state.
     """
+    # ── Step 0: JWT identity cross-check ──────────────────────────────────
+    if auth_actor and auth_actor.did != payload.actor_did:
+        logger.warning(
+            "SECURITY: JWT sub=%s does not match payload actor_did=%s",
+            auth_actor.did, payload.actor_did,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="JWT identity does not match the submitting actor DID",
+        )
+
     # ── Step 1: Actor validation ───────────────────────────────────────────
     actor: Actor | None = await db.get(Actor, payload.actor_did)
     if not actor:

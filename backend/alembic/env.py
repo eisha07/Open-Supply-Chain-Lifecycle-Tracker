@@ -8,7 +8,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 # Import all models so Alembic sees them via Base.metadata
-from app.models import actor, twin, event, telemetry  # noqa: F401
+from app.models import actor, twin, event, telemetry, blacklisted_serial  # noqa: F401
 from app.database import Base
 
 config = context.config

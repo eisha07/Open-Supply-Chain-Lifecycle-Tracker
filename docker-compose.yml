@@ -17,6 +17,20 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── Redis (rate limiter + session store) ────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # ── FastAPI Backend ──────────────────────────────────────────────────────────
   backend:
     build:
@@ -30,13 +44,16 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-jwt-secret-change-in-production}
       ADMIN_SECRET: ${ADMIN_SECRET:-admin-secret-change-in-production}
-      CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000","https://localhost"]'
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
   # ── Next.js Frontend ─────────────────────────────────────────────────────────
   frontend:
@@ -53,3 +70,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # ── Crypto ────────────────────────────────────────────────────────────────
     SIGNATURE_MAX_AGE_SECONDS: int = 300
 
+    # ── Redis (rate limiter backend) ──────────────────────────────────────────
+    REDIS_URL: str = ""  # Empty = fall back to in-memory rate limiter
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors(cls, v: Any) -> List[str]:

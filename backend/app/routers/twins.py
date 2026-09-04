@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.dependencies import optional_auth, AuthenticatedActor
 from app.models.actor import Actor, ActorRole
 from app.models.event import EventType, ProductEvent
 from app.models.twin import ProductTwin, TwinStatus
@@ -57,14 +58,23 @@ async def create_twin(
     payload: TwinCreate,
     actor_did: str = Query(..., description="DID of the authenticated actor"),
     db: AsyncSession = Depends(get_db),
+    auth_actor: Optional[AuthenticatedActor] = Depends(optional_auth),
 ) -> TwinRead:
     """
     Instantiate a Digital Twin with a unique did:key identifier.
+
+    When a JWT Bearer token is provided, the token's subject must match
+    the `actor_did` query parameter (anti-impersonation check).
 
     **Role restrictions:**
     - `RAW_MATERIAL_SUPPLIER`: may create material-batch twins.
     - `OEM_MANUFACTURER`: may create component / finished-product twins.
     """
+    # JWT cross-check: prevent submitting on behalf of another actor
+    if auth_actor and auth_actor.did != actor_did:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="JWT identity does not match the actor_did parameter")
+
     actor = await _require_actor(db, actor_did)
 
     if actor.role not in (ActorRole.RAW_MATERIAL_SUPPLIER, ActorRole.OEM_MANUFACTURER):
@@ -154,7 +164,13 @@ async def generate_zkp(
     payload: ZKPDisclosureRequest,
     actor_did: str = Query(...),
     db: AsyncSession = Depends(get_db),
+    auth_actor: Optional[AuthenticatedActor] = Depends(optional_auth),
 ) -> dict:
+    # JWT cross-check
+    if auth_actor and auth_actor.did != actor_did:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="JWT identity does not match the actor_did parameter")
+
     actor = await _require_actor(db, actor_did)
     if actor.role != ActorRole.OEM_MANUFACTURER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,

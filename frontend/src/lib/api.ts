@@ -22,8 +22,19 @@ async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
+  // Auto-attach JWT Bearer token if available
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string>),
+  };
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("oslt_access_token");
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+  }
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers,
     ...options,
   });
   if (!res.ok) {
@@ -57,6 +68,33 @@ export async function getMe(token: string): Promise<ActorRead> {
   return request("/auth/me", {
     headers: { Authorization: `Bearer ${token}` },
   });
+}
+
+/** Clear stored JWT and actor info from localStorage. */
+export function logout(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("oslt_access_token");
+    localStorage.removeItem("oslt_actor_did");
+    localStorage.removeItem("oslt_actor_role");
+  }
+}
+
+/** Return the stored JWT token, or null if not logged in. */
+export function getStoredToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("oslt_access_token");
+}
+
+/** Return the stored actor DID, or null if not logged in. */
+export function getStoredActorDid(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("oslt_actor_did");
+}
+
+/** Return the stored actor role, or null if not logged in. */
+export function getStoredActorRole(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("oslt_actor_role");
 }
 
 // ── Actors ────────────────────────────────────────────────────────────────────
