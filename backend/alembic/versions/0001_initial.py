@@ -96,6 +96,19 @@ def upgrade() -> None:
     )
     op.create_index("ix_product_events_twin_seq", "product_events",
                     ["twin_id", "sequence_num"])
+    # Composite indexes for common query patterns
+    op.create_index("ix_product_events_twin_type", "product_events",
+                    ["twin_id", "event_type"])
+    op.create_index("ix_product_events_twin_ts", "product_events",
+                    ["twin_id", "actor_timestamp"])
+    op.create_index("ix_product_events_twin_actor", "product_events",
+                    ["twin_id", "actor_did"])
+
+    # Twin composite indexes
+    op.create_index("ix_twins_product_type_status", "twins",
+                    ["product_type", "status"])
+    op.create_index("ix_twins_product_type", "twins", ["product_type"])
+    op.create_index("ix_twins_manufacturer", "twins", ["manufacturer_did"])
 
     # ── untrusted_telemetry (quarantine) ──────────────────────────────────────
     op.create_table(
@@ -130,6 +143,13 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("blacklisted_serials")
     op.drop_table("untrusted_telemetry")
+    # Drop composite indexes
+    op.drop_index("ix_twins_manufacturer", table_name="twins")
+    op.drop_index("ix_twins_product_type", table_name="twins")
+    op.drop_index("ix_twins_product_type_status", table_name="twins")
+    op.drop_index("ix_product_events_twin_actor", table_name="product_events")
+    op.drop_index("ix_product_events_twin_ts", table_name="product_events")
+    op.drop_index("ix_product_events_twin_type", table_name="product_events")
     op.drop_index("ix_product_events_twin_seq", table_name="product_events")
     op.drop_table("product_events")
     op.drop_table("twins")

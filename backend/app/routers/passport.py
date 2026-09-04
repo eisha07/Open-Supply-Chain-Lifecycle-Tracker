@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import qrcode
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -48,22 +48,44 @@ def _filter_public_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
 async def get_public_passport(
     twin_id: str,
     db: AsyncSession = Depends(get_db),
-) -> TwinPublicRead:
+) -> Response:
     """
     Unauthenticated endpoint for QR-code scan landing page.
 
-    Returns a privacy-masked view of the twin:
-      - Strips manufacturer_did, exact weights, supplier identities.
-      - Exposes: name, type, status, SoH %, safety rating, recyclability score,
-        ZKP flags, provenance gap flag.
+    Returns a privacy-masked view of the twin with ETag and Cache-Control
+    headers for efficient client-side caching.
     """
+    # Try Redis cache first
+    from app.cache import cache_get, cache_set, passport_key
+    cached = await cache_get(passport_key(twin_id))
+    if cached is not None:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            content=cached,
+            headers={
+                "Cache-Control": "public, max-age=30, must-revalidate",
+                "ETag": f'"{cached.get("version_id", "")}"',
+            },
+        )
+
     twin = await db.get(ProductTwin, twin_id)
     if not twin:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No Digital Product Passport found for ID {twin_id!r}",
         )
-    return TwinPublicRead.model_validate(twin)
+    data = TwinPublicRead.model_validate(twin).model_dump(mode="json")
+    data["version_id"] = twin.version_id
+    await cache_set(passport_key(twin_id), data, ttl=60)
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content=TwinPublicRead.model_validate(twin).model_dump(mode="json"),
+        headers={
+            "Cache-Control": "public, max-age=30, must-revalidate",
+            "ETag": f'"{twin.version_id}"',
+        },
+    )
 
 
 @router.get("/{twin_id}/timeline", summary="Public provenance timeline (paginated)",
@@ -101,15 +123,15 @@ async def get_public_timeline(
     if event_type:
         q = q.where(ProductEvent.event_type == event_type)
 
-    # Get total count for pagination metadata
-    count_q = select(ProductEvent).where(
+    # Get total count efficiently using COUNT(*) instead of loading all rows
+    count_q = select(sa_func.count()).select_from(ProductEvent).where(
         ProductEvent.twin_id == twin_id,
         ProductEvent.event_type != "SECURITY_ALERT",
     )
     if event_type:
         count_q = count_q.where(ProductEvent.event_type == event_type)
     count_result = await db.execute(count_q)
-    total_count = len(count_result.scalars().all())
+    total_count = count_result.scalar() or 0
 
     q = q.limit(limit).offset(offset)
     result = await db.execute(q)

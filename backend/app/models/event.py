@@ -82,6 +82,12 @@ class ProductEvent(Base):
         # Enforce strict per-twin ordering — also prevents duplicate sequence
         UniqueConstraint("twin_id", "sequence_num", name="uq_twin_sequence"),
         Index("ix_product_events_twin_seq", "twin_id", "sequence_num"),
+        # Composite index for filtered queries: twin + event_type (used in second_life_estimate)
+        Index("ix_product_events_twin_type", "twin_id", "event_type"),
+        # Composite index for date-range filtering (used in get_events date_from/date_to)
+        Index("ix_product_events_twin_ts", "twin_id", "actor_timestamp"),
+        # Composite index for actor + twin queries (used in get_events actor_did filter)
+        Index("ix_product_events_twin_actor", "twin_id", "actor_did"),
     )
 
     # ── Relationships ────────────────────────────────────────────────────────

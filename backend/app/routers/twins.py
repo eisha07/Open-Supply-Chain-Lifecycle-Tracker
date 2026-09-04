@@ -142,11 +142,20 @@ async def get_twin(
     twin_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> TwinRead:
+    # Try Redis cache first
+    from app.cache import cache_get, cache_set, twin_key
+    cached = await cache_get(twin_key(twin_id))
+    if cached is not None:
+        return TwinRead(**cached)
+
     twin = await db.get(ProductTwin, twin_id)
     if not twin:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Twin {twin_id!r} not found")
-    return TwinRead.model_validate(twin)
+
+    data = TwinRead.model_validate(twin)
+    await cache_set(twin_key(twin_id), data.model_dump(mode="json"), ttl=60)
+    return data
 
 
 @router.get("/{twin_id}/children", response_model=List[TwinRead],
@@ -195,6 +204,11 @@ async def generate_zkp(
     # Persist flags to the twin
     twin.zkp_flags = flags
     await db.flush()
+
+    # Invalidate caches for this twin
+    from app.cache import invalidate_twin
+    await invalidate_twin(twin_id)
+
     return {"twin_id": twin_id, "zkp_flags": flags}
 
 

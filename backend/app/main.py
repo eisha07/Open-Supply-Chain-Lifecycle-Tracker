@@ -10,6 +10,7 @@ ReDoc available at:       http://localhost:8000/redoc
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -29,13 +30,55 @@ logging.basicConfig(
 
 settings = get_settings()
 
+# Track startup time for health monitoring
+_startup_time: float = 0.0
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Create all tables on startup (development only — use Alembic in production)."""
+    """
+    Startup / shutdown lifecycle:
+      1. Validate database connectivity
+      2. Create tables (dev) or run migrations (prod)
+      3. Pre-warm Redis connection for caching + rate limiting
+      4. Gracefully close Redis on shutdown
+    """
+    global _startup_time
+    _startup_time = time.monotonic()
+
+    # ── Step 1: Validate database connectivity ───────────────────────────────
+    try:
+        from sqlalchemy import text
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        logging.getLogger(__name__).info("LIFESPAN: Database connection validated")
+    except Exception as exc:
+        logging.getLogger(__name__).error("LIFESPAN: Database connection failed: %s", exc)
+        # Don't raise — allow the app to start even if DB is temporarily down
+
+    # ── Step 2: Create tables (dev only — use Alembic in production) ────────
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # ── Step 3: Pre-warm Redis connection ────────────────────────────────────
+    try:
+        from app.cache import get_redis
+        r = await get_redis()
+        if r:
+            logging.getLogger(__name__).info("LIFESPAN: Redis pre-warmed for caching + rate limiting")
+        else:
+            logging.getLogger(__name__).info("LIFESPAN: Redis not configured — using in-memory fallback")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("LIFESPAN: Redis pre-warm failed: %s", exc)
+
     yield
+
+    # ── Shutdown: close Redis and DB connections ─────────────────────────────
+    try:
+        from app.cache import close_redis
+        await close_redis()
+    except Exception:
+        pass
     await engine.dispose()
 
 
@@ -46,7 +89,7 @@ app = FastAPI(
         "Creates verifiable Digital Twins for physical products and tracks their state "
         "across a multi-party supply chain via an append-only cryptographic event ledger."
     ),
-    version="1.1.0",
+    version="1.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -74,4 +117,28 @@ app.include_router(telemetry_ws.router) # Has its own rate-limit for /batch
 
 @app.get("/health", tags=["System"], summary="Health check")
 async def health() -> dict:
-    return {"status": "ok", "version": "1.1.0"}
+    uptime = round(time.monotonic() - _startup_time, 1) if _startup_time else 0
+
+    # Check Redis status
+    redis_ok = False
+    try:
+        from app.cache import get_redis
+        r = await get_redis()
+        if r:
+            await r.ping()
+            redis_ok = True
+    except Exception:
+        pass
+
+    # Check WebSocket connections
+    from app.routers.telemetry_ws import get_active_connection_count
+    ws_connections = get_active_connection_count()
+
+    return {
+        "status": "ok",
+        "version": "1.2.0",
+        "uptime_seconds": uptime,
+        "redis": "connected" if redis_ok else "unavailable",
+        "websocket_connections": ws_connections,
+        "cache_enabled": redis_ok,
+    }

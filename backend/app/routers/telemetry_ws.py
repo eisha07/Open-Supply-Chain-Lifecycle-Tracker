@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
+import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +23,48 @@ from app.models.twin import ProductTwin
 from app.schemas.event import EventCreate
 from app.models.event import EventType
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/telemetry", tags=["IoT Telemetry"])
+
+
+# ── Connection pool tracking ──────────────────────────────────────────────────
+# Tracks active WebSocket connections for monitoring and graceful shutdown.
+_active_connections: Dict[str, Set[WebSocket]] = {}
+_connection_count: int = 0
+_connection_count_lock = asyncio.Lock()
+
+MAX_CONNECTIONS_PER_TWIN = 5
+MAX_TOTAL_CONNECTIONS = 100
+
+
+async def _register_connection(twin_id: str, ws: WebSocket) -> bool:
+    """Register a WebSocket connection. Returns False if limits exceeded."""
+    global _connection_count
+    async with _connection_count_lock:
+        if _connection_count >= MAX_TOTAL_CONNECTIONS:
+            return False
+        twin_conns = _active_connections.setdefault(twin_id, set())
+        if len(twin_conns) >= MAX_CONNECTIONS_PER_TWIN:
+            return False
+        twin_conns.add(ws)
+        _connection_count += 1
+        return True
+
+
+async def _unregister_connection(twin_id: str, ws: WebSocket) -> None:
+    """Remove a WebSocket connection from tracking."""
+    global _connection_count
+    async with _connection_count_lock:
+        twin_conns = _active_connections.get(twin_id, set())
+        twin_conns.discard(ws)
+        if not twin_conns:
+            _active_connections.pop(twin_id, None)
+        _connection_count = max(0, _connection_count - 1)
+
+
+def get_active_connection_count() -> int:
+    """Return the number of active WebSocket connections (for monitoring)."""
+    return _connection_count
 
 
 # ── Mock BMS data generator ───────────────────────────────────────────────────
@@ -51,20 +94,44 @@ async def telemetry_websocket(
     The client can send {"command": "stop"} to terminate the stream.
     The server automatically stops after 300 messages (5 minutes) to
     prevent resource exhaustion.
+
+    Connection pooling:
+    - Max 5 concurrent connections per twin
+    - Max 100 total concurrent connections
+    - DB session released after initial lookup (not held open)
     """
+    # Check connection limits BEFORE accepting
+    if not await _register_connection(twin_id, websocket):
+        await websocket.accept()
+        await websocket.close(
+            code=4029,
+            reason="Too many concurrent connections — retry later",
+        )
+        return
+
     await websocket.accept()
 
-    # Quick DB check — use a fresh session per connection
+    # Quick DB check — release session immediately after lookup
     from app.database import AsyncSessionLocal
-    async with AsyncSessionLocal() as db:
-        twin = await db.get(ProductTwin, twin_id)
-        if not twin:
-            await websocket.close(code=4004, reason=f"Twin {twin_id!r} not found")
-            return
-        base_soh = twin.current_soh_pct or 85.0
+    base_soh = 85.0
+    try:
+        async with AsyncSessionLocal() as db:
+            twin = await db.get(ProductTwin, twin_id)
+            if not twin:
+                await websocket.close(code=4004, reason=f"Twin {twin_id!r} not found")
+                await _unregister_connection(twin_id, websocket)
+                return
+            base_soh = twin.current_soh_pct or 85.0
+    except Exception as exc:
+        logger.warning("WS: DB lookup failed for twin %s: %s", twin_id, exc)
+        await websocket.close(code=4500, reason="Database error")
+        await _unregister_connection(twin_id, websocket)
+        return
 
+    # DB session is now released — streaming uses no DB resources
     message_count = 0
     MAX_MESSAGES = 300
+    start_time = time.monotonic()
 
     try:
         while message_count < MAX_MESSAGES:
@@ -86,13 +153,16 @@ async def telemetry_websocket(
 
     except WebSocketDisconnect:
         pass  # Client disconnected normally
+    finally:
+        duration = round(time.monotonic() - start_time, 1)
+        await _unregister_connection(twin_id, websocket)
+        logger.info(
+            "WS: twin=%s msgs=%d duration=%.1fs active=%d",
+            twin_id, message_count, duration, get_active_connection_count(),
+        )
 
 
 # ── Offline-first batch sync endpoint (Feature 8) ────────────────────────────
-
-class BatchSyncRequest:
-    pass
-
 
 from pydantic import BaseModel
 

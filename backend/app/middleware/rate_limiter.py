@@ -29,32 +29,9 @@ _redis_failed = False
 
 
 async def _get_redis():
-    """Return a Redis connection, or None if Redis is unavailable."""
-    global _redis, _redis_failed
-
-    if not settings.REDIS_URL:
-        return None
-
-    if _redis is not None:
-        return _redis
-
-    if _redis_failed:
-        return None
-
-    try:
-        import redis.asyncio as aioredis
-        _redis = aioredis.from_url(
-            settings.REDIS_URL,
-            decode_responses=True,
-            socket_connect_timeout=2,
-        )
-        await _redis.ping()
-        logger.info("RATE_LIMITER: Connected to Redis at %s", settings.REDIS_URL)
-        return _redis
-    except Exception as exc:
-        _redis_failed = True
-        logger.warning("RATE_LIMITER: Redis unavailable (%s) — using in-memory fallback", exc)
-        return None
+    """Return the shared Redis connection from cache module, or None."""
+    from app.cache import get_redis
+    return await get_redis()
 
 
 # ── In-memory fallback (when Redis is not available) ─────────────────────────

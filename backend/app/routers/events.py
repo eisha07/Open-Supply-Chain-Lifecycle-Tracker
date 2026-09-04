@@ -35,7 +35,7 @@ from app.services.crypto import (
     sha256_hex,
     verify_signature,
 )
-from app.services.state_engine import reduce_events
+from app.services.state_engine import reduce_events, reduce_incremental
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["Events"])
@@ -276,18 +276,24 @@ async def append_event(
     )
     db.add(event)
 
-    # Re-compute twin state via state engine
-    result = await db.execute(
-        select(ProductEvent)
+    # Re-compute twin state via INCREMENTAL state engine (O(1) for single event)
+    # Only fetch the last sequence number — no need to load ALL events
+    last_seq_result = await db.execute(
+        select(func.max(ProductEvent.sequence_num))
         .where(ProductEvent.twin_id == payload.twin_id)
-        .order_by(ProductEvent.sequence_num)
+        .where(ProductEvent.id != event.id)
     )
-    all_events = list(result.scalars().all()) + [event]
-    new_state = reduce_events(twin, all_events)
+    last_seq = last_seq_result.scalar()  # None if this is the first event
+
+    new_state = reduce_incremental(twin, [event], last_processed_seq=last_seq)
 
     for field, value in new_state.items():
         setattr(twin, field, value)
     twin.version_id += 1
+
+    # Invalidate caches for this twin
+    from app.cache import invalidate_twin
+    await invalidate_twin(payload.twin_id)
 
     try:
         await db.flush()
@@ -321,6 +327,14 @@ async def get_events(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Twin {twin_id!r} not found")
 
+    # Try Redis cache for unfiltered paginated reads (most common path)
+    from app.cache import cache_get, cache_set, events_key
+    is_simple_read = not event_type and not actor_did and not date_from and not date_to
+    if is_simple_read:
+        cached = await cache_get(events_key(twin_id, limit, offset, None))
+        if cached is not None:
+            return [EventRead(**e) for e in cached]
+
     q = select(ProductEvent).where(ProductEvent.twin_id == twin_id)
     if event_type:
         q = q.where(ProductEvent.event_type == event_type)
@@ -333,7 +347,14 @@ async def get_events(
 
     q = q.order_by(ProductEvent.sequence_num).limit(limit).offset(offset)
     result = await db.execute(q)
-    return [EventRead.model_validate(e) for e in result.scalars().all()]
+    events = [EventRead.model_validate(e) for e in result.scalars().all()]
+
+    # Cache unfiltered reads for 30 seconds
+    if is_simple_read:
+        await cache_set(events_key(twin_id, limit, offset, None),
+                        [e.model_dump(mode="json") for e in events], ttl=30)
+
+    return events
 
 
 @router.get("/{twin_id}/export", summary="Export event history as CSV",

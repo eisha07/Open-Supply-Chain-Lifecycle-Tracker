@@ -5,6 +5,12 @@ Computes the *current* live state of a Digital Twin by replaying its
 append-only event history over the factory-gate baseline.  This approach
 ensures that part swaps, repairs, and telemetry readings are always
 reflected in the current material profile and SoH — never stale factory specs.
+
+Two modes:
+  - `reduce_events()`: Full replay from baseline (O(n), used on first computation
+    or when provenance gaps are detected).
+  - `reduce_incremental()`: Delta-only replay from the twin's current materialized
+    state (O(1) for a single new event).  Skips already-processed events.
 """
 from __future__ import annotations
 
@@ -85,6 +91,45 @@ def _apply_decommission(state: Dict[str, Any], metadata: Dict[str, Any]) -> None
         state["status"] = TwinStatus.SCRAPPED
 
 
+def _apply_status_derived(state: Dict[str, Any]) -> None:
+    """Re-derive post-reduction status flags (SoH thresholds, provenance gaps)."""
+    soh = state.get("current_soh_pct")
+    if soh is not None and state["status"] == TwinStatus.ACTIVE:
+        if soh < _SOH_AUTOMOTIVE_MIN_PCT:
+            state["status"] = TwinStatus.UNSUITABLE_FOR_AUTOMOTIVE
+        if soh >= _SOH_STATIONARY_MIN_PCT:
+            state["status"] = TwinStatus.RECOMMENDED_FOR_STATIONARY_STORAGE
+
+    if state.get("has_provenance_gap") and state["status"] == TwinStatus.ACTIVE:
+        state["status"] = TwinStatus.PROVENANCE_GAP_DETECTED
+
+
+def _apply_single_event(state: Dict[str, Any], event: Any, prev_sequence: Optional[int]) -> Optional[int]:
+    """
+    Apply a single event to the state dict.  Returns the updated sequence number.
+    Also detects provenance gaps when prev_sequence is provided.
+    """
+    # Gap detection
+    expected = (prev_sequence + 1) if prev_sequence is not None else event.sequence_num
+    if event.sequence_num != expected and prev_sequence is not None:
+        state["has_provenance_gap"] = True
+
+    meta: Dict[str, Any] = event.metadata_json or {}
+
+    if event.event_type == EventType.TELEMETRY_SNAPSHOT:
+        _apply_telemetry(state, meta)
+    elif event.event_type == EventType.REPAIR_PART_SWAP:
+        _apply_repair_part_swap(state, meta)
+    elif event.event_type == EventType.DECOMMISSION:
+        _apply_decommission(state, meta)
+    elif event.event_type == EventType.SECURITY_ALERT:
+        state["status"] = TwinStatus.TAMPERED_SAFETY_RISK
+
+    return event.sequence_num
+
+
+# ── Full replay (O(n)) ──────────────────────────────────────────────────────
+
 def reduce_events(twin: ProductTwin, events: List[Any]) -> Dict[str, Any]:
     """
     Fold the full event history over the twin's baseline to produce the
@@ -105,37 +150,67 @@ def reduce_events(twin: ProductTwin, events: List[Any]) -> Dict[str, Any]:
     prev_sequence: Optional[int] = None
 
     for event in events:
-        # ── Edge Case 1: detect out-of-order / gap in sequence ────────────────
-        expected = (prev_sequence + 1) if prev_sequence is not None else event.sequence_num
-        if event.sequence_num != expected and prev_sequence is not None:
-            state["has_provenance_gap"] = True
-        prev_sequence = event.sequence_num
+        prev_sequence = _apply_single_event(state, event, prev_sequence)
 
-        meta: Dict[str, Any] = event.metadata_json or {}
-
-        if event.event_type == EventType.TELEMETRY_SNAPSHOT:
-            _apply_telemetry(state, meta)
-        elif event.event_type == EventType.REPAIR_PART_SWAP:
-            _apply_repair_part_swap(state, meta)
-        elif event.event_type == EventType.DECOMMISSION:
-            _apply_decommission(state, meta)
-        elif event.event_type == EventType.SECURITY_ALERT:
-            state["status"] = TwinStatus.TAMPERED_SAFETY_RISK
-
-    # ── Post-reduction derived computations ──────────────────────────────────
-    soh = state.get("current_soh_pct")
-    if soh is not None and state["status"] == TwinStatus.ACTIVE:
-        if soh < _SOH_AUTOMOTIVE_MIN_PCT:
-            state["status"] = TwinStatus.UNSUITABLE_FOR_AUTOMOTIVE
-        if soh >= _SOH_STATIONARY_MIN_PCT:
-            state["status"] = TwinStatus.RECOMMENDED_FOR_STATIONARY_STORAGE
-
-    if state.get("has_provenance_gap") and state["status"] == TwinStatus.ACTIVE:
-        state["status"] = TwinStatus.PROVENANCE_GAP_DETECTED
+    _apply_status_derived(state)
 
     # Recyclability score computed from current chemistry + SoH
     state["recyclability_score"] = _compute_recyclability_score(
-        state.get("current_chemistry") or {}, soh
+        state.get("current_chemistry") or {}, state.get("current_soh_pct")
+    )
+
+    return state
+
+
+# ── Incremental replay (O(k) where k = new events, typically 1) ─────────────
+
+def reduce_incremental(
+    twin: ProductTwin,
+    new_events: List[Any],
+    last_processed_seq: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Apply only the *new* events since the last computation, starting from the
+    twin's current materialized state rather than the factory baseline.
+
+    This avoids replaying the entire event history on every mutation.
+
+    Args:
+        twin: The ProductTwin row with current materialized state.
+        new_events: Events that have NOT yet been applied (sequence > last_processed_seq).
+        last_processed_seq: The sequence number of the last event already reflected
+            in the twin's state.  If None, falls back to full replay via reduce_events.
+
+    Returns a dict of fields to update on the ProductTwin row.
+    """
+    # If we don't know the last processed sequence, fall back to full replay
+    if last_processed_seq is None and new_events:
+        return reduce_events(twin, new_events)
+
+    # Build state from the twin's CURRENT materialized values (not baseline)
+    state: Dict[str, Any] = {
+        "current_capacity_kwh": twin.current_capacity_kwh or twin.initial_capacity_kwh,
+        "current_soh_pct": twin.current_soh_pct if twin.current_soh_pct is not None
+                           else (100.0 if twin.initial_capacity_kwh else None),
+        "current_chemistry": dict(twin.current_chemistry or twin.baseline_chemistry or {}),
+        "current_safety_rating": twin.current_safety_rating or twin.initial_safety_rating,
+        "material_weights_kg": dict(twin.material_weights_kg or {}),
+        "status": twin.status,
+        "has_provenance_gap": twin.has_provenance_gap,
+    }
+
+    # Filter to only events after last_processed_seq
+    delta = [e for e in new_events if last_processed_seq is None or e.sequence_num > last_processed_seq]
+
+    prev_sequence: Optional[int] = last_processed_seq
+
+    for event in delta:
+        prev_sequence = _apply_single_event(state, event, prev_sequence)
+
+    _apply_status_derived(state)
+
+    state["recyclability_score"] = _compute_recyclability_score(
+        state.get("current_chemistry") or {}, state.get("current_soh_pct")
     )
 
     return state

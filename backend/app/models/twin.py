@@ -5,7 +5,7 @@ import enum
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Enum as SAEnum, Float,
-    ForeignKey, Integer, JSON, String,
+    ForeignKey, Index, Integer, JSON, String,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -84,3 +84,12 @@ class ProductTwin(Base):
     events = relationship("ProductEvent", back_populates="twin",
                           order_by="ProductEvent.sequence_num",
                           cascade="all, delete-orphan")
+
+    __table_args__ = (
+        # Composite index for filtered listing (used in list_twins)
+        Index("ix_twins_product_type_status", "product_type", "status"),
+        # Index for product_type queries
+        Index("ix_twins_product_type", "product_type"),
+        # Index for manufacturer lookups
+        Index("ix_twins_manufacturer", "manufacturer_did"),
+    )
