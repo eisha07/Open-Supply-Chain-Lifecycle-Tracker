@@ -4,15 +4,17 @@ A prioritized inventory of features that are planned, incomplete, or absent from
 
 ---
 
-## 1. Authentication & Authorization
+## 1. Authentication & Authorization — MOSTLY COMPLETE
 
-| Gap | Impact | Priority |
+| Gap | Status | Priority |
 |---|---|---|
-| No JWT / OAuth / session-based auth | Anyone can call any API endpoint — no user identity verification | **Critical** |
-| Actor DID passed as query parameter without verification | Easy to impersonate any actor | **Critical** |
-| No password, MFA, or secure key storage | Private keys returned once at registration with no recovery | **Critical** |
-| Blacklist endpoint has no admin role enforcement | Any caller can blacklist any actor | **High** |
-| No role-based middleware at the HTTP layer | Role checks are ad-hoc in service logic, not enforced globally | **High** |
+| JWT authentication flow | **DONE** — Challenge-response with Ed25519 signature proof, JWT tokens with role claims, token blacklisting | - |
+| Role-based middleware at HTTP layer | **DONE** — `RequireAuth` + `RequireRole` FastAPI dependencies, wired across all protected endpoints | - |
+| Admin role enforcement on sensitive endpoints | **DONE** — Actor lookup and blacklist require `admin` role | - |
+| Actor DID passed as query parameter without verification | **DONE** — JWT `sub` claim cross-checked against `actor_did` on events/twins endpoints | - |
+| Redis-backed rate limiter | **DONE** — Sliding window via Redis sorted sets, shared connection pool | - |
+| No password, MFA, or secure key storage | Private keys returned once at registration with no recovery mechanism | **Medium** |
+| No multi-user / organizational auth | No support for multiple users per organization or org-level role delegation | **Medium** |
 
 ---
 
@@ -29,29 +31,28 @@ A prioritized inventory of features that are planned, incomplete, or absent from
 
 ---
 
-## 3. Database & Migrations
+## 3. Database & Migrations — MOSTLY COMPLETE
 
-| Gap | Details | Priority |
+| Gap | Status | Priority |
 |---|---|---|
-| Alembic migrations not active | `alembic.ini` and `env.py` exist but no migration history is generated; tables auto-created on startup | **High** |
-| No schema migration versioning | Production deployments cannot safely evolve the schema | **High** |
-| In-memory rate limiters | Lost on restart; not shared across multiple backend instances | **Medium** |
+| Alembic migrations not active | **DONE** — Full initial migration (`0001_initial.py`) with all tables, indexes, and constraints | - |
+| No schema migration versioning | **DONE** — Alembic revision history with upgrade/downgrade support | - |
+| In-memory rate limiters | **DONE** — Migrated to Redis sorted-set sliding window | - |
 | In-memory counterfeit serial registry | `_BLACKLISTED_SERIALS` is a Python `set()` — not persisted, lost on restart | **Medium** |
-| No database indexing strategy | No documented or optimized indexes for query-heavy tables | **Medium** |
+| No database indexing strategy | **DONE** — 7 composite indexes on events and twins tables optimized for common query patterns | - |
 
 ---
 
-## 4. Security & Production Readiness
+## 4. Security & Production Readiness — SIGNIFICANT PROGRESS
 
-| Gap | Details | Priority |
+| Gap | Status | Priority |
 |---|---|---|
-| Rate limiter uses in-memory dict | Should be Redis-backed for multi-process / multi-instance deployments | **High** |
-| Secret key hardcoded in docker-compose | `dev-secret-change-in-production` is committed in `docker-compose.yml` | **High** |
-| No HTTPS/TLS configuration | All traffic is plaintext HTTP — no production-grade transport security | **High** |
-| No request signing beyond Ed25519 events | No HMAC or API key auth for read endpoints | **Medium** |
-| No audit logging | No structured logging of security events, failed auth attempts, or state changes | **Medium** |
+| Rate limiter uses in-memory dict | **DONE** — Redis-backed sliding window rate limiter | - |
+| Secret key hardcoded in docker-compose | **DONE** — All secrets extracted to `.env`, `.env.example` documents required variables | - |
+| No HTTPS/TLS configuration | **DONE** — nginx reverse proxy with TLS 1.2/1.3, HSTS, security headers, HTTP→HTTPS redirect, WebSocket support | - |
+| No request signing beyond Ed25519 events | **DONE** — HMAC-SHA256 API key authentication with `X-API-Key`, `X-Signature`, `X-Timestamp` headers; replay protection via timestamp freshness | - |
+| No audit logging | **DONE** — Structured JSON audit middleware logging every HTTP request with actor DID, duration, IP; security events logged from auth, RBAC, and rate limiter | - |
 | No input validation on some endpoints | Twin name length, material weight ranges not enforced in all code paths | **Low** |
-| Rate limit state not persisted | Resets to zero on every backend restart | **Medium** |
 
 ---
 
@@ -98,43 +99,61 @@ A prioritized inventory of features that are planned, incomplete, or absent from
 
 ---
 
-## 8. Performance & Scalability
+## 8. Performance & Scalability — COMPLETE
 
-| Gap | Details | Priority |
+| Gap | Status | Priority |
 |---|---|---|
-| No caching layer | No Redis/Memcached — every request hits the database directly | **Medium** |
-| Full event replay on every mutation | State engine replays entire event history on each event append — O(n) per event | **Medium** |
-| No pagination on passport timeline | Loads all events at once for the public passport view | **Medium** |
-| No database query optimization | No eager loading, query profiling, or connection tuning | **Low** |
-| WebSocket connections not pooled | Each telemetry stream creates a new connection with no lifecycle management | **Low** |
+| No caching layer | **DONE** — Redis caching with 60s TTL on twins/passport, 30s on events, pattern-based invalidation | - |
+| Full event replay on every mutation | **DONE** — Incremental state engine (`reduce_incremental()`) achieves O(1) for single-event appends | - |
+| No pagination on passport timeline | **DONE** — Paginated with optimized COUNT(*) query (no full row loading) | - |
+| No database query optimization | **DONE** — 7 composite indexes, COUNT(*) instead of len(all()), eager session management | - |
+| WebSocket connections not pooled | **DONE** — Connection pool (max 5/twin, 100 total), DB session released after lookup, structured logging | - |
+| No HTTP caching headers | **DONE** — ETag + Cache-Control on passport endpoints | - |
+| No lifespan optimization | **DONE** — DB validation, Redis pre-warm on startup, graceful shutdown, enhanced health endpoint | - |
 
 ---
 
 ## Suggested Priority Roadmap
 
-### Phase 1 — Security Foundation
-1. JWT/OAuth authentication flow
-2. Admin role enforcement on sensitive endpoints
-3. Move rate limiter to Redis
-4. Activate Alembic migrations
-5. Remove hardcoded secrets from docker-compose
+### Phase 1 — Security Foundation  COMPLETE
+1. ~~JWT/OAuth authentication flow~~
+2. ~~Admin role enforcement on sensitive endpoints~~
+3. ~~Move rate limiter to Redis~~
+4. ~~Activate Alembic migrations~~
+5. ~~Remove hardcoded secrets from docker-compose~~
+6. ~~HTTPS/TLS via nginx reverse proxy~~
+7. ~~HMAC-SHA256 API key authentication~~
+8. ~~Structured audit logging~~
 
-### Phase 2 — Core UX Completion
-1. Actor registration & login UI
+### Phase 2 — Performance & Scalability  COMPLETE
+1. ~~Redis caching layer~~
+2. ~~Incremental state engine~~
+3. ~~Database indexes~~
+4. ~~WebSocket connection pooling~~
+5. ~~Lifespan optimization~~
+6. ~~HTTP caching headers (ETag, Cache-Control)~~
+
+### Phase 3 — Core UX Completion
+1. Actor registration & login UI on the frontend
 2. Event submission forms on technician dashboard
-3. Complete twin creation forms (all fields)
-4. Loading states and error boundaries
-
-### Phase 3 — Production Hardening
-1. HTTPS/TLS configuration
-2. End-to-end test suite
-3. CI/CD pipeline
-4. Audit logging
-5. Database indexing and query optimization
+3. Wire technician timeline to real API events
+4. Complete twin creation forms (all fields)
+5. Loading states and error boundaries
+6. Offline queue batch sync via `/telemetry/batch`
 
 ### Phase 4 — Enterprise Features
 1. Multi-tenancy and organization management
 2. Reporting and analytics dashboard
 3. Webhook notifications
-4. QR code generation
+4. QR code generation for passports
 5. External system integrations
+6. CSV/PDF export of event ledgers
+
+### Phase 5 — Production Hardening
+1. End-to-end test suite
+2. CI/CD pipeline (GitHub Actions)
+3. Expand unit/integration test coverage
+4. Persist counterfeit serial registry to database
+5. Real ZKP library integration
+6. i18n / localization
+7. Accessibility (a11y) compliance
