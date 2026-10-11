@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import defaultdict
 from typing import Dict, Optional, Tuple
 
 from fastapi import HTTPException, Request, status
@@ -45,7 +44,7 @@ class _Bucket:
         self.last_refill: float = time.monotonic()
 
 
-_buckets: Dict[Tuple[str, str], _Bucket] = defaultdict(lambda: _Bucket(0))
+_buckets: Dict[Tuple[str, str], _Bucket] = {}
 _lock = asyncio.Lock()
 
 
@@ -64,10 +63,11 @@ def _refill_and_consume(bucket: _Bucket, capacity: float, refill_rate: float) ->
 async def _check_memory(key: Tuple[str, str], capacity: float, refill_rate: float) -> bool:
     """In-memory token bucket check."""
     async with _lock:
-        bucket = _buckets[key]
-        if bucket.tokens == 0 and bucket.last_refill == 0:
-            bucket.tokens = capacity
-            bucket.last_refill = time.monotonic()
+        bucket = _buckets.get(key)
+        if bucket is None:
+            # First sight of this key: start full so the first request succeeds.
+            bucket = _Bucket(capacity)
+            _buckets[key] = bucket
         return _refill_and_consume(bucket, capacity, refill_rate)
 
 
@@ -138,9 +138,24 @@ async def check_rate_limit(
         )
 
 
+def _client_ip(request: Request) -> str:
+    """Client IP honouring the reverse-proxy chain (Render, nginx, ...).
+
+    Behind a proxy, ``request.client.host`` is the proxy's own address, which
+    would put every visitor into one shared bucket. Proxies append the real
+    client to ``X-Forwarded-For``, so the last entry is the one our trusted
+    proxy observed; direct connections (local dev) have no header and fall
+    through to the socket peer.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[-1].strip()
+    return request.client.host if request.client else "unknown"
+
+
 async def global_rate_limit_dependency(request: Request) -> None:
     """FastAPI dependency for a global per-IP rate limit."""
-    ip = request.client.host if request.client else "unknown"
+    ip = _client_ip(request)
     limit = settings.GLOBAL_RATE_LIMIT_PER_MINUTE
     await check_rate_limit(
         identifier=ip,
@@ -152,7 +167,7 @@ async def global_rate_limit_dependency(request: Request) -> None:
 
 async def telemetry_rate_limit_dependency(request: Request) -> None:
     """FastAPI dependency for the tighter telemetry-endpoint rate limit."""
-    ip = request.client.host if request.client else "unknown"
+    ip = _client_ip(request)
     limit = settings.TELEMETRY_RATE_LIMIT_PER_MINUTE
     await check_rate_limit(
         identifier=ip,
