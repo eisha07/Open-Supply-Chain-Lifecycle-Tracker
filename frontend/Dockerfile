@@ -8,14 +8,28 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED 1
+
+# NEXT_PUBLIC_* values are inlined into the client-side JS bundle at BUILD time.
+# Passing it as a runtime environment variable alone would have no effect — the
+# browser would keep calling whatever URL was baked in here. It must be an ARG.
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV production
 ENV NEXT_TELEMETRY_DISABLED 1
+
+# Run as an unprivileged user rather than root.
+RUN addgroup --system --gid 1001 nodejs \
+    && adduser --system --uid 1001 nextjs
+
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+
+USER nextjs
 EXPOSE 3000
+ENV PORT 3000
 CMD ["node", "server.js"]

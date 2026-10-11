@@ -1,0 +1,33 @@
+# ── Build context exclusions ───────────────────────────────────────────────────
+# node_modules and .next are rebuilt inside the image; copying them from the host
+# would shadow the installed dependencies with host-platform binaries.
+node_modules/
+.next/
+out/
+build/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Version control and tooling
+.git/
+.gitignore
+.gitattributes
+.dockerignore
+Dockerfile
+docker-compose*.yml
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
+
+# Docs
+*.md

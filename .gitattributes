@@ -1,0 +1,17 @@
+# ── Line-ending normalisation ──────────────────────────────────────────────────
+# Shell scripts must keep LF endings or their shebang breaks inside Linux
+# containers when the repository is checked out on Windows.
+*.sh text eol=lf
+entrypoint.sh text eol=lf
+
+# Dockerfiles and generated files
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Denote binary assets so Git never mangles them
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

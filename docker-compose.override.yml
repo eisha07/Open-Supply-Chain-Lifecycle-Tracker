@@ -1,0 +1,30 @@
+# ── Local development overrides ────────────────────────────────────────────────
+#
+# Docker Compose merges this file automatically for `docker compose up`, but NOT
+# when you pass an explicit `-f` flag. Production deploys therefore inherit the
+# locked-down base file while local development keeps convenient host ports.
+#
+# What this adds:
+#   * Host ports for psql / RedisInsight / direct Swagger access.
+#   * APP_ENV=development so the backend auto-creates tables on boot.
+#
+# nginx is still opt-in locally via `docker compose --profile tls up`.
+
+services:
+  db:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  backend:
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+
+  frontend:
+    ports:
+      - "3000:3000"

@@ -56,9 +56,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logging.getLogger(__name__).error("LIFESPAN: Database connection failed: %s", exc)
         # Don't raise — allow the app to start even if DB is temporarily down
 
-    # ── Step 2: Create tables (dev only — use Alembic in production) ────────
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # ── Step 2: Ensure schema exists ─────────────────────────────────────────
+    # Development auto-creates tables for convenience. In production the schema
+    # is owned exclusively by Alembic (applied by entrypoint.sh before this
+    # process starts), so we must not touch it here: create_all() cannot express
+    # migrations and would silently diverge from the migrated schema.
+    if settings.APP_ENV.lower() in ("development", "dev", "local", "test"):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    else:
+        logging.getLogger(__name__).info(
+            "LIFESPAN: APP_ENV=%s — schema is managed by Alembic, skipping create_all()",
+            settings.APP_ENV,
+        )
 
     # ── Step 3: Pre-warm Redis connection ────────────────────────────────────
     try:

@@ -1,0 +1,40 @@
+# ── Build context exclusions ───────────────────────────────────────────────────
+# Keeps secrets and build noise out of the image. Without this, `COPY . .` in the
+# Dockerfile would bake a local .env straight into an image layer.
+.env
+.env.*
+!.env.example
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local databases
+*.db
+*.sqlite3
+
+# Version control and tooling
+.git/
+.gitignore
+.gitattributes
+.dockerignore
+Dockerfile
+docker-compose*.yml
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docs
+*.md

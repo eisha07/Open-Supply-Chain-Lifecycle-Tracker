@@ -38,3 +38,6 @@ nginx/certs/
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 .aicoding-chat-workspace
+
+# certbot ACME webroot (transient challenge tokens)
+nginx/certbot/
