@@ -1,13 +1,16 @@
 """
-HMAC-SHA256 API key authentication for read endpoints.
+Read-endpoint authentication: JWT session OR HMAC-signed API key.
 
-Supports two modes:
-  1. Simple API key: client sends `X-API-Key: <key>` header only.
-  2. HMAC-signed request: client sends `X-API-Key` + `X-Signature` +
+Accepted credentials, in order:
+  1. JWT Bearer token — browser sessions attach this after Ed25519
+     challenge-response login.
+  2. Simple API key: client sends `X-API-Key: <key>` header only.
+  3. HMAC-signed request: client sends `X-API-Key` + `X-Signature` +
      `X-Timestamp` headers. The signature is HMAC-SHA256(method + path + timestamp)
      keyed by the shared API_KEY.  This prevents replay and tampering.
 
-When API_KEY is empty in settings, this dependency is a no-op (always passes).
+When API_KEY is empty in settings, the key path is skipped (JWT still
+honoured); with no credentials at all the request is rejected.
 
 Usage:
     from app.api_key import require_api_key
@@ -27,6 +30,7 @@ from fastapi import Header, HTTPException, Request, status
 
 from app.config import get_settings
 from app.middleware.audit import audit_event
+from app.services.auth import decode_access_token
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -47,17 +51,36 @@ def _expected_signature(method: str, path: str, timestamp: str, key: str) -> str
 
 async def require_api_key(
     request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     x_signature: Optional[str] = Header(None, alias="X-Signature"),
     x_timestamp: Optional[str] = Header(None, alias="X-Timestamp"),
 ) -> None:
     """
-    FastAPI dependency that validates an API key header.
+    FastAPI dependency that validates read access.
 
-    If settings.API_KEY is empty, this is a no-op (auth disabled).
-    If API_KEY is set, the request must present the correct key.
-    If X-Signature and X-Timestamp are also present, validates HMAC-SHA256.
+    Accepts either a valid JWT Bearer token (browser sessions) or the
+    shared API key (machine clients, optionally HMAC-signed).
+    If settings.API_KEY is empty, the key check is skipped (JWT still
+    honoured); with no credentials the request is rejected.
     """
+    # 1) JWT Bearer path — how the browser client authenticates
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token.strip():
+            if decode_access_token(token.strip()) is not None:
+                audit_event("apikey.valid", detail=f"JWT auth passed for {request.url.path}")
+                return
+            audit_event(
+                "apikey.jwt_invalid",
+                detail=f"Invalid or expired Bearer token for {request.url.path}",
+                severity="WARNING",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired access token — log in again",
+            )
+
     # No API key configured — skip check entirely
     if not settings.API_KEY:
         return

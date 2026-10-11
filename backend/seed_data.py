@@ -1,13 +1,23 @@
-"""Seed script to populate the database with realistic supply-chain twins and events."""
+"""Seed script to populate the database with realistic supply-chain twins and events.
+
+Targets the deployment named by OSLT_BASE_URL (default: local backend) and
+authenticates its final read with a JWT obtained by logging in one of the
+seeded actors via the Ed25519 challenge-response flow — so it works against
+any deployment with no shared-key configuration. Set OSLT_API_KEY to also
+attach the machine-client key header to every request.
+"""
 import asyncio
 import base64
 import json
+import os
 import time
 from datetime import datetime, timezone, timedelta
 
 import httpx
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.getenv("OSLT_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+API_KEY = os.getenv("OSLT_API_KEY", "")
+FRONTEND = os.getenv("OSLT_FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -30,6 +40,18 @@ def canonical_payload(twin_id: str, event_type: str, actor_did: str,
         "metadata_json": metadata_json,
     }
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
+
+
+async def login(client: httpx.AsyncClient, did: str, private_key_hex: str) -> str:
+    """Ed25519 challenge-response login; returns the JWT access token."""
+    ch_resp = await client.get(f"{BASE}/auth/challenge", params={"actor_did": did})
+    ch_resp.raise_for_status()
+    challenge = ch_resp.json()["challenge"]
+    sig = sign_payload(private_key_hex, challenge.encode("utf-8"))
+    resp = await client.post(f"{BASE}/auth/token", json={
+        "actor_did": did, "challenge": challenge, "signature": sig})
+    resp.raise_for_status()
+    return resp.json()["access_token"]
 
 
 async def register_actor(client: httpx.AsyncClient, name: str, role: str) -> dict:
@@ -73,7 +95,8 @@ async def append_event(client: httpx.AsyncClient, private_key_hex: str,
 # ── Seed Data ──────────────────────────────────────────────────────────────────
 
 async def seed():
-    async with httpx.AsyncClient(timeout=30) as c:
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+    async with httpx.AsyncClient(timeout=30, headers=headers) as c:
 
         # Health check
         h = await c.get(f"{BASE}/health")
@@ -342,8 +365,21 @@ async def seed():
 
         # ── 7. Summary ───────────────────────────────────────────────────────
         print("\n=== Seed Complete ===")
-        twins_resp = await c.get(f"{BASE}/twins", params={"limit": 200})
-        twins = twins_resp.json()
+        # Summary read: prefer the actor's own JWT; fall back to the API key.
+        try:
+            token = await login(c, oem["did"], oem["private_key_hex"])
+            auth_headers = {"Authorization": f"Bearer {token}"}
+        except Exception as exc:  # noqa: BLE001
+            print(f"  (JWT login unavailable — {exc})")
+            auth_headers = {}
+        twins_resp = await c.get(f"{BASE}/twins", params={"limit": 200},
+                                 headers=auth_headers)
+        if twins_resp.status_code >= 400:
+            print(f"  Summary read failed: HTTP {twins_resp.status_code} — "
+                  f"{twins_resp.text[:200]}")
+            twins = []
+        else:
+            twins = twins_resp.json()
         print(f"  Total twins: {len(twins)}")
         for t in twins:
             print(f"    [{t['product_type']}] {t['name']}")
@@ -351,7 +387,7 @@ async def seed():
 
         print("\n=== Public passport URLs ===")
         for t in twins[:3]:
-            print(f"  http://localhost:3000/passport/{t['id']}")
+            print(f"  {FRONTEND}/passport/{t['id']}")
 
         print("\nDone!")
 

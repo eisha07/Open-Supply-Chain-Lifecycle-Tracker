@@ -17,7 +17,6 @@ from sqlalchemy import select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.api_key import require_api_key
 from app.models.event import ProductEvent
 from app.models.twin import ProductTwin
 from app.schemas.event import EventPublicRead
@@ -43,8 +42,7 @@ def _filter_public_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.get("/{twin_id}", response_model=TwinPublicRead,
-            summary="Public Digital Product Passport (mobile-first)",
-            dependencies=[Depends(require_api_key)])
+            summary="Public Digital Product Passport (mobile-first)")
 async def get_public_passport(
     twin_id: str,
     db: AsyncSession = Depends(get_db),
@@ -88,8 +86,7 @@ async def get_public_passport(
     )
 
 
-@router.get("/{twin_id}/timeline", summary="Public provenance timeline (paginated)",
-            dependencies=[Depends(require_api_key)])
+@router.get("/{twin_id}/timeline", summary="Public provenance timeline (paginated)")
 async def get_public_timeline(
     twin_id: str,
     limit: int = Query(50, ge=1, le=200, description="Max events per page"),
@@ -167,8 +164,7 @@ async def get_public_timeline(
     }
 
 
-@router.get("/{twin_id}/qr", summary="Generate a QR code PNG for the public passport URL",
-            dependencies=[Depends(require_api_key)])
+@router.get("/{twin_id}/qr", summary="Generate a QR code PNG for the public passport URL")
 async def get_passport_qr(
     twin_id: str,
     base_url: str = Query(
